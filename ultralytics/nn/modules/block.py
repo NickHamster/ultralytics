@@ -1142,12 +1142,14 @@ class PredictiveLayer(nn.Module):
         # Initialize storage for temporal predictions
         self.predictions = {}
         self.prediction_timestamps = {}  # Keep track of when predictions were made
+        self.spatial_dims = {}  # Store spatial dimensions for each identifier
         
     def reset_predictions(self):
         """Reset the stored predictions dictionary."""
         if not self.training:  # Only reset during inference
             self.predictions.clear()
             self.prediction_timestamps.clear()
+            self.spatial_dims.clear()
         
     def _cleanup_old_predictions(self):
         """Remove oldest predictions if exceeding memory length."""
@@ -1159,6 +1161,7 @@ class PredictiveLayer(nn.Module):
             for identifier, _ in items_to_remove:
                 del self.predictions[identifier]
                 del self.prediction_timestamps[identifier]
+                del self.spatial_dims[identifier]
         
     def forward(self, x, identifier):
         """
@@ -1173,11 +1176,23 @@ class PredictiveLayer(nn.Module):
         """
         # Generate prediction for current input
         current_pred = self.pred_conv(x)
+        current_spatial_dims = (current_pred.shape[2], current_pred.shape[3])
         
         # Get previous prediction if available
         prev_pred = self.predictions.get(identifier, None)
+        prev_spatial_dims = self.spatial_dims.get(identifier, None)
         
         if prev_pred is not None:
+            # Check if spatial dimensions match
+            if prev_spatial_dims != current_spatial_dims:
+                # Resize previous prediction to match current dimensions
+                prev_pred = torch.nn.functional.interpolate(
+                    prev_pred,
+                    size=current_spatial_dims,
+                    mode='bilinear',
+                    align_corners=False
+                )
+            
             # Calculate prediction error
             error = current_pred - prev_pred
             
@@ -1191,6 +1206,7 @@ class PredictiveLayer(nn.Module):
         # Store prediction for next forward pass with timestamp
         self.predictions[identifier] = current_pred.detach()
         self.prediction_timestamps[identifier] = torch.cuda.current_stream().record_event() if x.is_cuda else time.time()
+        self.spatial_dims[identifier] = current_spatial_dims
         
         # Cleanup old predictions if needed
         self._cleanup_old_predictions()
