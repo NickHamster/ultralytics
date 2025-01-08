@@ -1113,17 +1113,6 @@ class SCDown(nn.Module):
         return self.cv2(self.cv1(x))
 
 class PredictiveLayer(nn.Module):
-    """
-    Predictive coding layer that learns to predict feature patterns
-    and gates information flow based on prediction errors.
-    
-    Args:
-        in_channels (int): Number of input channels
-        out_channels (int): Number of output channels
-        kernel_size (int): Kernel size for prediction conv (default: 3)
-        error_reduction (float): Factor to reduce error signal (default: 0.1)
-        memory_length (int): Maximum number of stored predictions (default: 1000)
-    """
     def __init__(self, in_channels, out_channels, kernel_size=3, error_reduction=0.1, memory_length=1000):
         super().__init__()
         self.error_reduction = error_reduction
@@ -1143,18 +1132,18 @@ class PredictiveLayer(nn.Module):
         self.predictions = {}
         self.prediction_timestamps = {}
         self.spatial_dims = {}
-        self.batch_sizes = {}  # Track batch sizes
+        self.batch_sizes = {}
+        self.dtypes = {}  # Track tensor dtypes
         
     def reset_predictions(self):
-        """Reset the stored predictions dictionary."""
-        if not self.training:  # Only reset during inference
+        if not self.training:
             self.predictions.clear()
             self.prediction_timestamps.clear()
             self.spatial_dims.clear()
             self.batch_sizes.clear()
+            self.dtypes.clear()
         
     def _cleanup_old_predictions(self):
-        """Remove oldest predictions if exceeding memory length."""
         if len(self.predictions) > self.memory_length:
             sorted_items = sorted(self.prediction_timestamps.items(), key=lambda x: x[1])
             items_to_remove = sorted_items[:-self.memory_length]
@@ -1164,49 +1153,39 @@ class PredictiveLayer(nn.Module):
                 del self.prediction_timestamps[identifier]
                 del self.spatial_dims[identifier]
                 del self.batch_sizes[identifier]
+                del self.dtypes[identifier]
         
     def _adjust_batch_size(self, tensor, target_batch_size):
-        """Adjust tensor batch size through tiling or slicing."""
         current_batch_size = tensor.size(0)
         
         if current_batch_size == target_batch_size:
             return tensor
         
         if current_batch_size < target_batch_size:
-            # Tile tensor to match target batch size
             repeats = (target_batch_size + current_batch_size - 1) // current_batch_size
             tensor = tensor.repeat(repeats, 1, 1, 1)[:target_batch_size]
         else:
-            # Slice tensor to match target batch size
             tensor = tensor[:target_batch_size]
             
         return tensor
         
     def forward(self, x, identifier):
-        """
-        Forward pass with prediction and error gating.
-        
-        Args:
-            x (torch.Tensor): Input features
-            identifier (str): Unique ID for this layer's position
-            
-        Returns:
-            torch.Tensor: Processed features
-        """
         # Generate prediction for current input
         current_pred = self.pred_conv(x)
         current_batch_size = current_pred.size(0)
         current_spatial_dims = (current_pred.shape[2], current_pred.shape[3])
         device = current_pred.device
+        dtype = current_pred.dtype  # Get current dtype
         
         # Get previous prediction if available
         prev_pred = self.predictions.get(identifier, None)
         prev_spatial_dims = self.spatial_dims.get(identifier, None)
         prev_batch_size = self.batch_sizes.get(identifier, None)
+        prev_dtype = self.dtypes.get(identifier, None)
         
         if prev_pred is not None:
-            # Move to current device
-            prev_pred = prev_pred.to(device)
+            # Move to current device and dtype
+            prev_pred = prev_pred.to(device=device, dtype=dtype)
             
             # Adjust batch size if needed
             if prev_batch_size != current_batch_size:
@@ -1236,6 +1215,7 @@ class PredictiveLayer(nn.Module):
         self.prediction_timestamps[identifier] = torch.cuda.current_stream().record_event() if x.is_cuda else time.time()
         self.spatial_dims[identifier] = current_spatial_dims
         self.batch_sizes[identifier] = current_batch_size
+        self.dtypes[identifier] = dtype
         
         # Cleanup old predictions if needed
         self._cleanup_old_predictions()
