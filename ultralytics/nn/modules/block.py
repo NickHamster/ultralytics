@@ -50,7 +50,7 @@ __all__ = (
     "PSA",
     "SCDown",
     "PredictiveLayer",
-    "GhostConvPredictive"
+    "GhostConvPredictive",
     "GhostBottleneckPredictive",
     "C3GhostPredictive",
     "SPPFPredictive"    
