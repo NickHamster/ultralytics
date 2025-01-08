@@ -1177,12 +1177,16 @@ class PredictiveLayer(nn.Module):
         # Generate prediction for current input
         current_pred = self.pred_conv(x)
         current_spatial_dims = (current_pred.shape[2], current_pred.shape[3])
+        device = current_pred.device  # Get current device
         
         # Get previous prediction if available
         prev_pred = self.predictions.get(identifier, None)
         prev_spatial_dims = self.spatial_dims.get(identifier, None)
         
         if prev_pred is not None:
+            # Ensure prev_pred is on the same device
+            prev_pred = prev_pred.to(device)
+            
             # Check if spatial dimensions match
             if prev_spatial_dims != current_spatial_dims:
                 # Resize previous prediction to match current dimensions
@@ -1204,7 +1208,7 @@ class PredictiveLayer(nn.Module):
             x = x + self.error_reduction * gate * error
         
         # Store prediction for next forward pass with timestamp
-        self.predictions[identifier] = current_pred.detach()
+        self.predictions[identifier] = current_pred.detach().cpu()  # Store on CPU
         self.prediction_timestamps[identifier] = torch.cuda.current_stream().record_event() if x.is_cuda else time.time()
         self.spatial_dims[identifier] = current_spatial_dims
         
@@ -1212,7 +1216,7 @@ class PredictiveLayer(nn.Module):
         self._cleanup_old_predictions()
         
         return x
-
+        
 class GhostConvPredictive(nn.Module):
     """
     Enhanced Ghost Convolution with predictive coding capabilities.
