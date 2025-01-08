@@ -1122,10 +1122,12 @@ class PredictiveLayer(nn.Module):
         out_channels (int): Number of output channels
         kernel_size (int): Kernel size for prediction conv (default: 3)
         error_reduction (float): Factor to reduce error signal (default: 0.1)
+        memory_length (int): Maximum number of stored predictions (default: 1000)
     """
-    def __init__(self, in_channels, out_channels, kernel_size=3, error_reduction=0.1):
+    def __init__(self, in_channels, out_channels, kernel_size=3, error_reduction=0.1, memory_length=1000):
         super().__init__()
         self.error_reduction = error_reduction
+        self.memory_length = memory_length
         padding = kernel_size // 2
         
         # Prediction convolution
@@ -1139,11 +1141,24 @@ class PredictiveLayer(nn.Module):
         
         # Initialize storage for temporal predictions
         self.predictions = {}
-
-    
+        self.prediction_timestamps = {}  # Keep track of when predictions were made
+        
     def reset_predictions(self):
         """Reset the stored predictions dictionary."""
-        self.predictions.clear()
+        if not self.training:  # Only reset during inference
+            self.predictions.clear()
+            self.prediction_timestamps.clear()
+        
+    def _cleanup_old_predictions(self):
+        """Remove oldest predictions if exceeding memory length."""
+        if len(self.predictions) > self.memory_length:
+            # Sort by timestamp and keep only the newest self.memory_length predictions
+            sorted_items = sorted(self.prediction_timestamps.items(), key=lambda x: x[1])
+            items_to_remove = sorted_items[:-self.memory_length]
+            
+            for identifier, _ in items_to_remove:
+                del self.predictions[identifier]
+                del self.prediction_timestamps[identifier]
         
     def forward(self, x, identifier):
         """
@@ -1172,9 +1187,13 @@ class PredictiveLayer(nn.Module):
             
             # Apply gated error correction
             x = x + self.error_reduction * gate * error
-            
-        # Store prediction for next forward pass
+        
+        # Store prediction for next forward pass with timestamp
         self.predictions[identifier] = current_pred.detach()
+        self.prediction_timestamps[identifier] = torch.cuda.current_stream().record_event() if x.is_cuda else time.time()
+        
+        # Cleanup old predictions if needed
+        self._cleanup_old_predictions()
         
         return x
 
