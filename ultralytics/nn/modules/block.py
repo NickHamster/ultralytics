@@ -1264,79 +1264,81 @@ class GhostConvPredictive(nn.Module):
         return torch.cat([y, y_cheap], 1)
 
 class GhostBottleneckPredictive(nn.Module):
-   """Enhanced Ghost Bottleneck with predictive coding and residual connections."""
-   def __init__(self, c1, c2, k=3, s=1):
-       """Initializes GhostBottleneck module with predictive coding."""
-       super().__init__()
-       # Convert to integers and validate
-       c1, c2 = int(c1), int(c2)
-       if c1 <= 0 or c2 <= 0:
-           raise ValueError(f"Channel dimensions must be positive, got c1={c1}, c2={c2}")
-           
-       c_ = max(1, min(c2 // 2, 256))  # Hidden channels, capped at 256
-       
-       # Main convolution branch with predictive coding
-       self.conv = nn.Sequential(
-           GhostConvPredictive(c1, c_, 1, 1, act=True),  # pw
-           DWConv(c_, c_, k, s, act=False) if s == 2 else nn.Identity(),  # dw
-           GhostConvPredictive(c_, c2, 1, 1, act=False)  # pw-linear
-       )
-       
-       # Channel-wise attention
-       self.ch_attn = nn.Sequential(
-           nn.AdaptiveAvgPool2d(1),
-           Conv(c2, c2 // 16, 1),
-           nn.ReLU(),
-           Conv(c2 // 16, c2, 1),
-           nn.Sigmoid()
-       )
-       
-       # Feature refinement gate
-       self.feature_gate = nn.Sequential(
-           Conv(c2 * 2, c2, 1),
-           nn.Sigmoid()
-       )
-       
-       # Shortcut branch
-       self.shortcut = (
-           nn.Sequential(
-               DWConv(c1, c1, k, s, act=False),
-               Conv(c1, c2, 1, 1, act=False)
-           ) if s == 2 else nn.Identity()
-       )
-       
-   def forward(self, x, identifier):
-       """Forward pass with predictive coding and residual enhancement."""
-       # Main path
-       out = x
-       residual = out
-       
-       # Ghost convolutions with predictive coding
-       if isinstance(self.conv[0], GhostConvPredictive):
-           out = self.conv[0](out, f"{identifier}_ghost1")
-       else:
-           out = self.conv[0](out)
-           
-       out = self.conv[1](out)
-       
-       if isinstance(self.conv[2], GhostConvPredictive):
-           out = self.conv[2](out, f"{identifier}_ghost2")
-       else:
-           out = self.conv[2](out)
-       
-       # Channel attention
-       ch_attn = self.ch_attn(out)
-       out = out * ch_attn
-       
-       # Feature refinement with residual gate
-       shortcut = self.shortcut(x)
-       gate = self.feature_gate(torch.cat([out, shortcut], dim=1))
-       out = gate * out + (1 - gate) * shortcut
-       
-       # Final residual connection
-       out = out + residual
-           
-       return out
+    """Enhanced Ghost Bottleneck with predictive coding and residual connections."""
+    def __init__(self, c1, c2, k=3, s=1):
+        super().__init__()
+        c1, c2 = int(c1), int(c2)
+        if c1 <= 0 or c2 <= 0:
+            raise ValueError(f"Channel dimensions must be positive, got c1={c1}, c2={c2}")
+            
+        c_ = max(1, min(c2 // 2, 256))  # Hidden channels, capped at 256
+        
+        # Main convolution branch with predictive coding
+        self.conv = nn.Sequential(
+            GhostConvPredictive(c1, c_, 1, 1, act=True),  # pw
+            DWConv(c_, c_, k, s, act=False) if s == 2 else nn.Identity(),  # dw
+            GhostConvPredictive(c_, c2, 1, 1, act=False)  # pw-linear
+        )
+        
+        # Simplified channel attention
+        self.ch_attn = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(c2, c2 // 16, 1, bias=True),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(c2 // 16, c2, 1, bias=True),
+            nn.Sigmoid()
+        )
+        
+        # Feature fusion gate (simplified)
+        self.feature_gate = nn.Sequential(
+            nn.Conv2d(c2 * 2, c2, 1, bias=True),
+            nn.Sigmoid()
+        )
+        
+        # Shortcut branch
+        self.shortcut = (
+            nn.Sequential(
+                DWConv(c1, c1, k, s, act=False),
+                Conv(c1, c2, 1, 1, act=False)
+            ) if s == 2 else nn.Identity()
+        )
+        
+    def forward(self, x, identifier):
+        # Main path
+        out = x
+        residual = out
+        
+        # Ghost convolutions with predictive coding
+        if isinstance(self.conv[0], GhostConvPredictive):
+            out = self.conv[0](out, f"{identifier}_ghost1")
+        else:
+            out = self.conv[0](out)
+            
+        out = self.conv[1](out)
+        
+        if isinstance(self.conv[2], GhostConvPredictive):
+            out = self.conv[2](out, f"{identifier}_ghost2")
+        else:
+            out = self.conv[2](out)
+        
+        # Apply channel attention if spatial dimensions are sufficient
+        if out.size(-1) > 1 and out.size(-2) > 1:
+            ch_attn = self.ch_attn(out)
+            out = out * ch_attn
+        
+        # Feature refinement with residual gate
+        shortcut = self.shortcut(x)
+        if out.size(-1) > 1 and out.size(-2) > 1:
+            gate = self.feature_gate(torch.cat([out, shortcut], dim=1))
+            out = gate * out + (1 - gate) * shortcut
+        else:
+            out = out + shortcut
+        
+        # Final residual connection
+        if x.size() == out.size():
+            out = out + residual
+            
+        return out
        
 class C3GhostPredictive(nn.Module):
     """
