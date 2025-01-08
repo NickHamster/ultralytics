@@ -98,6 +98,15 @@ except ImportError:
 class BaseModel(nn.Module):
     """The BaseModel class serves as a base class for all the models in the Ultralytics YOLO family."""
 
+    def reset_predictive_layers(self):
+        """
+        Resets all predictive layers in the model.
+        
+        """
+        for m in self.modules():
+            if isinstance(m, PredictiveLayer):
+                m.reset_predictions()    
+
     def forward(self, x, *args, **kwargs):
         """
         Perform forward pass of the model for either training or inference.
@@ -116,7 +125,7 @@ class BaseModel(nn.Module):
             return self.loss(x, *args, **kwargs)
         return self.predict(x, *args, **kwargs)
 
-    def predict(self, x, profile=False, visualize=False, augment=False, embed=None):
+    def predict(self, x, profile=False, visualize=False, augment=False, reset=False embed=None):
         """
         Perform a forward pass through the network.
 
@@ -126,10 +135,12 @@ class BaseModel(nn.Module):
             visualize (bool): Save the feature maps of the model if True, defaults to False.
             augment (bool): Augment image during prediction, defaults to False.
             embed (list, optional): A list of feature vectors/embeddings to return.
-
+            reset (bool): Resets all predictive layers when inferencing
         Returns:
             (torch.Tensor): The last output of the model.
         """
+        if reset:
+            self.reset_predictive_layers()
         if augment:
             return self._predict_augment(x)
         return self._predict_once(x, profile, visualize, embed)
