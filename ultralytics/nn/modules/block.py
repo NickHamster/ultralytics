@@ -1264,52 +1264,82 @@ class GhostConvPredictive(nn.Module):
         return torch.cat([y, y_cheap], 1)
 
 class GhostBottleneckPredictive(nn.Module):
-    """Ghost Bottleneck with predictive coding capabilities."""
-    def __init__(self, c1, c2, k=3, s=1):
-        """Initializes GhostBottleneck module with predictive coding."""
-        super().__init__()
-        # Convert to integers and validate
-        c1, c2 = int(c1), int(c2)
-        if c1 <= 0 or c2 <= 0:
-            raise ValueError(f"Channel dimensions must be positive, got c1={c1}, c2={c2}")
-            
-        c_ = max(1, c2 // 2)  # Hidden channels, ensure at least 1 channel
-        
-        # Main convolution branch with predictive coding
-        self.conv = nn.Sequential(
-            GhostConvPredictive(c1, c_, 1, 1, act=True),  # pw
-            DWConv(c_, c_, k, s, act=False) if s == 2 else nn.Identity(),  # dw
-            GhostConvPredictive(c_, c2, 1, 1, act=False)  # pw-linear
-        )
-        
-        # Shortcut branch
-        self.shortcut = (
-            nn.Sequential(
-                DWConv(c1, c1, k, s, act=False),
-                Conv(c1, c2, 1, 1, act=False)
-            ) if s == 2 else nn.Identity()
-        )
-        
-    def forward(self, x, identifier):
-        """Forward pass with predictive coding."""
-        out = x
-        if isinstance(self.conv[0], GhostConvPredictive):
-            out = self.conv[0](out, f"{identifier}_ghost1")
-        else:
-            out = self.conv[0](out)
-            
-        out = self.conv[1](out)
-        
-        if isinstance(self.conv[2], GhostConvPredictive):
-            out = self.conv[2](out, f"{identifier}_ghost2")
-        else:
-            out = self.conv[2](out)
-            
-        return out + self.shortcut(x)
-
+   """Enhanced Ghost Bottleneck with predictive coding and residual connections."""
+   def __init__(self, c1, c2, k=3, s=1):
+       """Initializes GhostBottleneck module with predictive coding."""
+       super().__init__()
+       # Convert to integers and validate
+       c1, c2 = int(c1), int(c2)
+       if c1 <= 0 or c2 <= 0:
+           raise ValueError(f"Channel dimensions must be positive, got c1={c1}, c2={c2}")
+           
+       c_ = max(1, min(c2 // 2, 256))  # Hidden channels, capped at 256
+       
+       # Main convolution branch with predictive coding
+       self.conv = nn.Sequential(
+           GhostConvPredictive(c1, c_, 1, 1, act=True),  # pw
+           DWConv(c_, c_, k, s, act=False) if s == 2 else nn.Identity(),  # dw
+           GhostConvPredictive(c_, c2, 1, 1, act=False)  # pw-linear
+       )
+       
+       # Channel-wise attention
+       self.ch_attn = nn.Sequential(
+           nn.AdaptiveAvgPool2d(1),
+           Conv(c2, c2 // 16, 1),
+           nn.ReLU(),
+           Conv(c2 // 16, c2, 1),
+           nn.Sigmoid()
+       )
+       
+       # Feature refinement gate
+       self.feature_gate = nn.Sequential(
+           Conv(c2 * 2, c2, 1),
+           nn.Sigmoid()
+       )
+       
+       # Shortcut branch
+       self.shortcut = (
+           nn.Sequential(
+               DWConv(c1, c1, k, s, act=False),
+               Conv(c1, c2, 1, 1, act=False)
+           ) if s == 2 else nn.Identity()
+       )
+       
+   def forward(self, x, identifier):
+       """Forward pass with predictive coding and residual enhancement."""
+       # Main path
+       out = x
+       residual = out
+       
+       # Ghost convolutions with predictive coding
+       if isinstance(self.conv[0], GhostConvPredictive):
+           out = self.conv[0](out, f"{identifier}_ghost1")
+       else:
+           out = self.conv[0](out)
+           
+       out = self.conv[1](out)
+       
+       if isinstance(self.conv[2], GhostConvPredictive):
+           out = self.conv[2](out, f"{identifier}_ghost2")
+       else:
+           out = self.conv[2](out)
+       
+       # Channel attention
+       ch_attn = self.ch_attn(out)
+       out = out * ch_attn
+       
+       # Feature refinement with residual gate
+       shortcut = self.shortcut(x)
+       gate = self.feature_gate(torch.cat([out, shortcut], dim=1))
+       out = gate * out + (1 - gate) * shortcut
+       
+       # Final residual connection
+       out = out + residual
+           
+       return out
 class C3GhostPredictive(nn.Module):
     """
-    Enhanced CSP Bottleneck with Ghost convolutions and predictive coding.
+    Enhanced CSP-Ghost Predictive module with improved gradient flow and feature reuse.
     
     Args:
         c1 (int): Input channels
@@ -1319,38 +1349,51 @@ class C3GhostPredictive(nn.Module):
     """
     def __init__(self, c1, c2, n=1, shortcut=True):
         super().__init__()
-        if not isinstance(c1, int) or not isinstance(c2, int):
-            raise ValueError(f"Channel dimensions must be integers, got c1={c1} ({type(c1)}), c2={c2} ({type(c2)})")
         
-        if c1 <= 0 or c2 <= 0:
-            raise ValueError(f"Channel dimensions must be positive, got c1={c1}, c2={c2}")
-            
-        c_ = max(1, c2 // 2)  # Hidden channels, ensure at least 1 channel
+        # Channel scaling
+        c_ = max(1, min(c2 // 2, 256))  # Cap maximum hidden channels
         
-        # Ensure all channel dimensions are integers
-        c1, c2, c_ = int(c1), int(c2), int(c_)
-        
+        # CSP path 1 (main branch)
         self.conv1 = Conv(c1, c_, 1, 1)
         self.conv2 = Conv(c1, c_, 1, 1)
-        self.conv3 = Conv(2 * c_, c2, 1)
         
-        # Ghost bottlenecks with prediction
+        # CSP path 2 (cross branch)
+        self.conv3 = Conv(2 * c_, c2, 1)
+        self.conv4 = Conv(c_, c_, 1, 1)  # Additional path for feature reuse
+        
+        # Ghost bottlenecks with prediction and residual
         self.bottlenecks = nn.ModuleList([
             GhostBottleneckPredictive(c_, c_, shortcut) 
             for _ in range(n)
         ])
         
+        # Feature fusion gate
+        self.gate = nn.Sequential(
+            Conv(c_ * 2, c_, 1),
+            nn.Sigmoid()
+        )
+        
     def forward(self, x, identifier):
-        # Split path
+        # Main CSP path
         y1 = self.conv1(x)
         y2 = self.conv2(x)
         
+        # Cross feature path
+        cross_features = self.conv4(y1)
+        
         # Process through ghost bottlenecks
+        residual = y1
         for i, block in enumerate(self.bottlenecks):
-            y1 = block(y1, f"{identifier}_block{i}")
-            
+            y1 = block(y1, cross_features, f"{identifier}_block{i}")
+            y1 = y1 + residual  # Residual connection
+            residual = y1
+        
+        # Adaptive feature fusion
+        fusion_gate = self.gate(torch.cat([y1, cross_features], dim=1))
+        y1 = y1 * fusion_gate + cross_features * (1 - fusion_gate)
+        
         # Merge paths
-        return self.conv3(torch.cat((y1, y2), 1))
+        return self.conv3(torch.cat([y1, y2], 1))
 
 class SPPFPredictive(nn.Module):
     """
