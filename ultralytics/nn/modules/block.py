@@ -1337,9 +1337,10 @@ class GhostBottleneckPredictive(nn.Module):
        out = out + residual
            
        return out
+       
 class C3GhostPredictive(nn.Module):
     """
-    Enhanced CSP-Ghost Predictive module with improved gradient flow and feature reuse.
+    Enhanced CSP Bottleneck with Ghost convolutions and predictive coding.
     
     Args:
         c1 (int): Input channels
@@ -1349,52 +1350,44 @@ class C3GhostPredictive(nn.Module):
     """
     def __init__(self, c1, c2, n=1, shortcut=True):
         super().__init__()
+        c_ = c2 // 2  # Hidden channels
         
-        # Channel scaling
-        c_ = max(1, min(c2 // 2, 256))  # Cap maximum hidden channels
-        
-        # CSP path 1 (main branch)
+        # Primary convolutions
         self.conv1 = Conv(c1, c_, 1, 1)
         self.conv2 = Conv(c1, c_, 1, 1)
-        
-        # CSP path 2 (cross branch)
         self.conv3 = Conv(2 * c_, c2, 1)
-        self.conv4 = Conv(c_, c_, 1, 1)  # Additional path for feature reuse
         
-        # Ghost bottlenecks with prediction and residual
+        # Ghost bottlenecks with prediction
         self.bottlenecks = nn.ModuleList([
             GhostBottleneckPredictive(c_, c_, shortcut) 
             for _ in range(n)
         ])
         
-        # Feature fusion gate
+        # Feature fusion gate for cross connections
         self.gate = nn.Sequential(
             Conv(c_ * 2, c_, 1),
             nn.Sigmoid()
         )
-        
+    
     def forward(self, x, identifier):
-        # Main CSP path
+        # Split path
         y1 = self.conv1(x)
         y2 = self.conv2(x)
         
-        # Cross feature path
-        cross_features = self.conv4(y1)
-        
-        # Process through ghost bottlenecks
+        # Process through ghost bottlenecks with residual
         residual = y1
         for i, block in enumerate(self.bottlenecks):
-            y1 = block(y1, cross_features, f"{identifier}_block{i}")
-            y1 = y1 + residual  # Residual connection
-            residual = y1
-        
-        # Adaptive feature fusion
-        fusion_gate = self.gate(torch.cat([y1, cross_features], dim=1))
-        y1 = y1 * fusion_gate + cross_features * (1 - fusion_gate)
+            y1 = block(y1, f"{identifier}_block{i}")
+            y1 = y1 + residual  # Add residual connection
+            residual = y1  # Update residual
+            
+            # Add cross feature gating
+            gate = self.gate(torch.cat([y1, y2], dim=1))
+            y1 = y1 * gate + y2 * (1 - gate)
         
         # Merge paths
-        return self.conv3(torch.cat([y1, y2], 1))
-
+        return self.conv3(torch.cat((y1, y2), 1))
+        
 class SPPFPredictive(nn.Module):
     """
     Enhanced Spatial Pyramid Pooling - Fast (SPPF) layer with predictive coding.
