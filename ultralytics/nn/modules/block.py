@@ -1133,7 +1133,7 @@ class PredictiveLayer(nn.Module):
         self.prediction_timestamps = {}
         self.spatial_dims = {}
         self.batch_sizes = {}
-        self.dtypes = {}  # Track tensor dtypes
+        self.dtypes = {}
         
     def reset_predictions(self):
         if not self.training:
@@ -1142,7 +1142,7 @@ class PredictiveLayer(nn.Module):
             self.spatial_dims.clear()
             self.batch_sizes.clear()
             self.dtypes.clear()
-        
+    
     def _cleanup_old_predictions(self):
         if len(self.predictions) > self.memory_length:
             sorted_items = sorted(self.prediction_timestamps.items(), key=lambda x: x[1])
@@ -1154,28 +1154,14 @@ class PredictiveLayer(nn.Module):
                 del self.spatial_dims[identifier]
                 del self.batch_sizes[identifier]
                 del self.dtypes[identifier]
-        
-    def _adjust_batch_size(self, tensor, target_batch_size):
-        current_batch_size = tensor.size(0)
-        
-        if current_batch_size == target_batch_size:
-            return tensor
-        
-        if current_batch_size < target_batch_size:
-            repeats = (target_batch_size + current_batch_size - 1) // current_batch_size
-            tensor = tensor.repeat(repeats, 1, 1, 1)[:target_batch_size]
-        else:
-            tensor = tensor[:target_batch_size]
-            
-        return tensor
-        
+                
     def forward(self, x, identifier):
         # Generate prediction for current input
         current_pred = self.pred_conv(x)
         current_batch_size = current_pred.size(0)
         current_spatial_dims = (current_pred.shape[2], current_pred.shape[3])
         device = current_pred.device
-        dtype = current_pred.dtype  # Get current dtype
+        dtype = current_pred.dtype
         
         # Get previous prediction if available
         prev_pred = self.predictions.get(identifier, None)
@@ -1189,7 +1175,12 @@ class PredictiveLayer(nn.Module):
             
             # Adjust batch size if needed
             if prev_batch_size != current_batch_size:
-                prev_pred = self._adjust_batch_size(prev_pred, current_batch_size)
+                if prev_batch_size < current_batch_size:
+                    # Tile tensor to match target batch size
+                    repeats = (current_batch_size + prev_batch_size - 1) // prev_batch_size
+                    prev_pred = prev_pred.repeat(repeats, 1, 1, 1)[:current_batch_size]
+                else:
+                    prev_pred = prev_pred[:current_batch_size]
             
             # Adjust spatial dimensions if needed
             if prev_spatial_dims != current_spatial_dims:
@@ -1212,7 +1203,7 @@ class PredictiveLayer(nn.Module):
         
         # Store prediction and metadata for next forward pass
         self.predictions[identifier] = current_pred.detach().cpu()
-        self.prediction_timestamps[identifier] = torch.cuda.current_stream().record_event() if x.is_cuda else time.time()
+        self.prediction_timestamps[identifier] = time.time()  # Use simple timestamp instead of CUDA event
         self.spatial_dims[identifier] = current_spatial_dims
         self.batch_sizes[identifier] = current_batch_size
         self.dtypes[identifier] = dtype
@@ -1221,6 +1212,17 @@ class PredictiveLayer(nn.Module):
         self._cleanup_old_predictions()
         
         return x
+
+    def __getstate__(self):
+        """Custom getstate to handle non-picklable attributes during model saving."""
+        state = self.__dict__.copy()
+        # Clear the caches that don't need to be saved
+        state['predictions'] = {}
+        state['prediction_timestamps'] = {}
+        state['spatial_dims'] = {}
+        state['batch_sizes'] = {}
+        state['dtypes'] = {}
+        return state
         
 class GhostConvPredictive(nn.Module):
     """
