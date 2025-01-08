@@ -1207,8 +1207,9 @@ class GhostConvPredictive(nn.Module):
         k (int): Kernel size
         s (int): Stride
         p (float): Padding
+        act (bool): Use activation, default=True
     """
-    def __init__(self, c1, c2, k=1, s=1, p=None):
+    def __init__(self, c1, c2, k=1, s=1, p=None, act=True):  # Added act parameter
         super().__init__()
         c_ = max(1, c2 // 2)  # Hidden channels, ensure at least 1 channel
         
@@ -1218,10 +1219,10 @@ class GhostConvPredictive(nn.Module):
             raise ValueError(f"Channel dimensions must be positive, got c1={c1}, c2={c2}, c_={c_}")
         
         # Primary convolution
-        self.cv1 = Conv(c1, c_, k, s, p, g=1)
+        self.cv1 = Conv(c1, c_, k, s, p, g=1, act=act)  # Pass act parameter
         
         # Cheap operations
-        self.cv2 = Conv(c_, c_, 5, 1, None, g=max(1, c_))  # ensure groups is at least 1
+        self.cv2 = Conv(c_, c_, 5, 1, None, g=max(1, c_), act=act)  # Pass act parameter
         
         # Predictive layer for feature enhancement
         self.pred = PredictiveLayer(c_, c_)
@@ -1249,7 +1250,7 @@ class GhostBottleneckPredictive(nn.Module):
         
         # Main convolution branch with predictive coding
         self.conv = nn.Sequential(
-            GhostConvPredictive(c1, c_, 1, 1),  # pw
+            GhostConvPredictive(c1, c_, 1, 1, act=True),  # pw
             DWConv(c_, c_, k, s, act=False) if s == 2 else nn.Identity(),  # dw
             GhostConvPredictive(c_, c2, 1, 1, act=False)  # pw-linear
         )
