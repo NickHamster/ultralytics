@@ -49,6 +49,11 @@ __all__ = (
     "Attention",
     "PSA",
     "SCDown",
+    "PredictiveLayer",
+    "GhostConvPredictive"
+    "GhostBottleneckPredictive",
+    "C3GhostPredictive",
+    "SPPFPredictive"    
 )
 
 
@@ -329,7 +334,6 @@ class GhostBottleneck(nn.Module):
     def forward(self, x):
         """Applies skip connection and concatenation to input tensor."""
         return self.conv(x) + self.shortcut(x)
-
 
 class Bottleneck(nn.Module):
     """Standard bottleneck."""
@@ -1107,3 +1111,220 @@ class SCDown(nn.Module):
     def forward(self, x):
         """Applies convolution and downsampling to the input tensor in the SCDown module."""
         return self.cv2(self.cv1(x))
+
+class PredictiveLayer(nn.Module):
+    """
+    Predictive coding layer that learns to predict feature patterns
+    and gates information flow based on prediction errors.
+    
+    Args:
+        in_channels (int): Number of input channels
+        out_channels (int): Number of output channels
+        kernel_size (int): Kernel size for prediction conv (default: 3)
+        error_reduction (float): Factor to reduce error signal (default: 0.1)
+    """
+    def __init__(self, in_channels, out_channels, kernel_size=3, error_reduction=0.1):
+        super().__init__()
+        self.error_reduction = error_reduction
+        padding = kernel_size // 2
+        
+        # Prediction convolution
+        self.pred_conv = Conv(in_channels, out_channels, k=kernel_size, p=padding)
+        
+        # Error gating mechanism
+        self.error_gate = nn.Sequential(
+            Conv(out_channels * 2, out_channels, k=1),
+            nn.Sigmoid()
+        )
+        
+        # Initialize storage for temporal predictions
+        self.predictions = {}
+        
+    def forward(self, x, identifier):
+        """
+        Forward pass with prediction and error gating.
+        
+        Args:
+            x (torch.Tensor): Input features
+            identifier (str): Unique ID for this layer's position
+            
+        Returns:
+            torch.Tensor: Processed features
+        """
+        # Generate prediction for current input
+        current_pred = self.pred_conv(x)
+        
+        # Get previous prediction if available
+        prev_pred = self.predictions.get(identifier, None)
+        
+        if prev_pred is not None:
+            # Calculate prediction error
+            error = current_pred - prev_pred
+            
+            # Gate the error signal
+            gate_input = torch.cat([error, current_pred], dim=1)
+            gate = self.error_gate(gate_input)
+            
+            # Apply gated error correction
+            x = x + self.error_reduction * gate * error
+            
+        # Store prediction for next forward pass
+        self.predictions[identifier] = current_pred.detach()
+        
+        return x
+
+class GhostConvPredictive(nn.Module):
+    """
+    Enhanced Ghost Convolution with predictive coding capabilities.
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels
+        k (int): Kernel size
+        s (int): Stride
+        p (float): Padding
+    """
+    def __init__(self, c1, c2, k=1, s=1, p=None):
+        super().__init__()
+        c_ = c2 // 2  # Hidden channels
+        
+        # Primary convolution
+        self.cv1 = Conv(c1, c_, k, s, p, g=1)
+        
+        # Cheap operations
+        self.cv2 = Conv(c_, c_, 5, 1, None, g=c_)
+        
+        # Predictive layer for feature enhancement
+        self.pred = PredictiveLayer(c_, c_)
+        
+    def forward(self, x, identifier):
+        y = self.cv1(x)
+        y_cheap = self.cv2(y)
+        
+        # Apply prediction to cheap features
+        y_cheap = self.pred(y_cheap, f"{identifier}_ghost")
+        
+        return torch.cat([y, y_cheap], 1)
+
+class GhostBottleneckPredictive(nn.Module):
+    """Ghost Bottleneck with predictive coding capabilities."""
+    
+    def __init__(self, c1, c2, k=3, s=1):
+        """
+        Initializes GhostBottleneck module with predictive coding.
+        
+        Args:
+            c1 (int): Input channels
+            c2 (int): Output channels
+            k (int): Kernel size
+            s (int): Stride
+        """
+        super().__init__()
+        c_ = c2 // 2
+        
+        # Main convolution branch with predictive coding
+        self.conv = nn.Sequential(
+            GhostConvPredictive(c1, c_, 1, 1),  # pw
+            DWConv(c_, c_, k, s, act=False) if s == 2 else nn.Identity(),  # dw
+            GhostConvPredictive(c_, c2, 1, 1, act=False)  # pw-linear
+        )
+        
+        # Shortcut branch
+        self.shortcut = (
+            nn.Sequential(
+                DWConv(c1, c1, k, s, act=False),
+                Conv(c1, c2, 1, 1, act=False)
+            ) if s == 2 else nn.Identity()
+        )
+        
+    def forward(self, x, identifier):
+        """
+        Forward pass with predictive coding.
+        
+        Args:
+            x (torch.Tensor): Input tensor
+            identifier (str): Unique identifier for this layer
+        
+        Returns:
+            torch.Tensor: Output tensor
+        """
+        # Handle predictive ghost convolutions with unique identifiers
+        out = x
+        for i, layer in enumerate(self.conv):
+            if isinstance(layer, GhostConvPredictive):
+                out = layer(out, f"{identifier}_ghost{i}")
+            else:
+                out = layer(out)
+                
+        return out + self.shortcut(x)
+
+class C3GhostPredictive(nn.Module):
+    """
+    Enhanced CSP Bottleneck with Ghost convolutions and predictive coding.
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels
+        n (int): Number of bottlenecks
+        shortcut (bool): Enable shortcut
+    """
+    def __init__(self, c1, c2, n=1, shortcut=True):
+        super().__init__()
+        c_ = c2 // 2  # Hidden channels
+        
+        self.conv1 = Conv(c1, c_, 1, 1)
+        self.conv2 = Conv(c1, c_, 1, 1)
+        self.conv3 = Conv(2 * c_, c2, 1)
+        
+        # Ghost bottlenecks with prediction
+        self.bottlenecks = nn.ModuleList([
+            GhostBottleneckPredictive(c_, c_, shortcut) 
+            for _ in range(n)
+        ])
+        
+    def forward(self, x, identifier):
+        # Split path
+        y1 = self.conv1(x)
+        y2 = self.conv2(x)
+        
+        # Process through ghost bottlenecks
+        for i, block in enumerate(self.bottlenecks):
+            y1 = block(y1, f"{identifier}_block{i}")
+            
+        # Merge paths
+        return self.conv3(torch.cat((y1, y2), 1))
+
+class SPPFPredictive(nn.Module):
+    """
+    Enhanced Spatial Pyramid Pooling - Fast (SPPF) layer with predictive coding.
+    
+    Args:
+        c1 (int): Input channels
+        c2 (int): Output channels
+        k (int): Kernel size
+    """
+    def __init__(self, c1, c2, k=5):
+        super().__init__()
+        c_ = c1 // 2  # Hidden channels
+        
+        self.conv1 = Conv(c1, c_, 1, 1)
+        self.conv2 = Conv(c_ * 4, c2, 1, 1)
+        self.maxpool = nn.MaxPool2d(kernel_size=k, stride=1, padding=k // 2)
+        
+        # Predictive layers for each scale
+        self.pred_layers = nn.ModuleList([
+            PredictiveLayer(c_, c_) for _ in range(4)
+        ])
+        
+    def forward(self, x, identifier):
+        x = self.conv1(x)
+        y1 = self.maxpool(x)
+        y2 = self.maxpool(y1)
+        y3 = self.maxpool(y2)
+        
+        # Apply prediction at each scale
+        features = [x, y1, y2, y3]
+        for i, (feat, pred) in enumerate(zip(features, self.pred_layers)):
+            features[i] = pred(feat, f"{identifier}_scale{i}")
+            
+        return self.conv2(torch.cat(features, 1))
