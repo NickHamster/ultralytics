@@ -61,6 +61,11 @@ from ultralytics.nn.modules import (
     Segment,
     WorldDetect,
     v10Detect,
+    PredictiveLayer,
+    GhostConvPredictive,
+    GhostBottleneckPredictive,
+    C3GhostPredictive,
+    SPPFPredictive    
 )
 from ultralytics.utils import DEFAULT_CFG_DICT, DEFAULT_CFG_KEYS, LOGGER, colorstr, emojis, yaml_load
 from ultralytics.utils.checks import check_requirements, check_suffix, check_yaml
