@@ -56,6 +56,11 @@ from .block import (
     RepVGGDW,
     ResNetLayer,
     SCDown,
+    PredictiveLayer,
+    GhostConvPredictive,
+    GhostBottleneckPredictive,
+    C3GhostPredictive,
+    SPPFPredictive    
 )
 from .conv import (
     CBAM,
@@ -156,4 +161,9 @@ __all__ = (
     "C2fCIB",
     "Attention",
     "PSA",
+    "PredictiveLayer",
+    "GhostConvPredictive"
+    "GhostBottleneckPredictive",
+    "C3GhostPredictive",
+    "SPPFPredictive"    
 )
