@@ -1139,6 +1139,11 @@ class PredictiveLayer(nn.Module):
         
         # Initialize storage for temporal predictions
         self.predictions = {}
+
+    
+    def reset_predictions(self):
+        """Reset the stored predictions dictionary."""
+        self.predictions.clear()
         
     def forward(self, x, identifier):
         """
