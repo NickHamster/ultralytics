@@ -1294,7 +1294,16 @@ class C3GhostPredictive(nn.Module):
     """
     def __init__(self, c1, c2, n=1, shortcut=True):
         super().__init__()
-        c_ = c2 // 2  # Hidden channels
+        if not isinstance(c1, int) or not isinstance(c2, int):
+            raise ValueError(f"Channel dimensions must be integers, got c1={c1} ({type(c1)}), c2={c2} ({type(c2)})")
+        
+        if c1 <= 0 or c2 <= 0:
+            raise ValueError(f"Channel dimensions must be positive, got c1={c1}, c2={c2}")
+            
+        c_ = max(1, c2 // 2)  # Hidden channels, ensure at least 1 channel
+        
+        # Ensure all channel dimensions are integers
+        c1, c2, c_ = int(c1), int(c2), int(c_)
         
         self.conv1 = Conv(c1, c_, 1, 1)
         self.conv2 = Conv(c1, c_, 1, 1)
