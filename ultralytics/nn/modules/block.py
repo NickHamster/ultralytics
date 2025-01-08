@@ -1210,13 +1210,18 @@ class GhostConvPredictive(nn.Module):
     """
     def __init__(self, c1, c2, k=1, s=1, p=None):
         super().__init__()
-        c_ = c2 // 2  # Hidden channels
+        c_ = max(1, c2 // 2)  # Hidden channels, ensure at least 1 channel
+        
+        # Convert to integers and validate
+        c1, c2, c_ = int(c1), int(c2), int(c_)
+        if c1 <= 0 or c2 <= 0 or c_ <= 0:
+            raise ValueError(f"Channel dimensions must be positive, got c1={c1}, c2={c2}, c_={c_}")
         
         # Primary convolution
         self.cv1 = Conv(c1, c_, k, s, p, g=1)
         
         # Cheap operations
-        self.cv2 = Conv(c_, c_, 5, 1, None, g=c_)
+        self.cv2 = Conv(c_, c_, 5, 1, None, g=max(1, c_))  # ensure groups is at least 1
         
         # Predictive layer for feature enhancement
         self.pred = PredictiveLayer(c_, c_)
@@ -1232,19 +1237,15 @@ class GhostConvPredictive(nn.Module):
 
 class GhostBottleneckPredictive(nn.Module):
     """Ghost Bottleneck with predictive coding capabilities."""
-    
     def __init__(self, c1, c2, k=3, s=1):
-        """
-        Initializes GhostBottleneck module with predictive coding.
-        
-        Args:
-            c1 (int): Input channels
-            c2 (int): Output channels
-            k (int): Kernel size
-            s (int): Stride
-        """
+        """Initializes GhostBottleneck module with predictive coding."""
         super().__init__()
-        c_ = c2 // 2
+        # Convert to integers and validate
+        c1, c2 = int(c1), int(c2)
+        if c1 <= 0 or c2 <= 0:
+            raise ValueError(f"Channel dimensions must be positive, got c1={c1}, c2={c2}")
+            
+        c_ = max(1, c2 // 2)  # Hidden channels, ensure at least 1 channel
         
         # Main convolution branch with predictive coding
         self.conv = nn.Sequential(
@@ -1262,24 +1263,20 @@ class GhostBottleneckPredictive(nn.Module):
         )
         
     def forward(self, x, identifier):
-        """
-        Forward pass with predictive coding.
-        
-        Args:
-            x (torch.Tensor): Input tensor
-            identifier (str): Unique identifier for this layer
-        
-        Returns:
-            torch.Tensor: Output tensor
-        """
-        # Handle predictive ghost convolutions with unique identifiers
+        """Forward pass with predictive coding."""
         out = x
-        for i, layer in enumerate(self.conv):
-            if isinstance(layer, GhostConvPredictive):
-                out = layer(out, f"{identifier}_ghost{i}")
-            else:
-                out = layer(out)
-                
+        if isinstance(self.conv[0], GhostConvPredictive):
+            out = self.conv[0](out, f"{identifier}_ghost1")
+        else:
+            out = self.conv[0](out)
+            
+        out = self.conv[1](out)
+        
+        if isinstance(self.conv[2], GhostConvPredictive):
+            out = self.conv[2](out, f"{identifier}_ghost2")
+        else:
+            out = self.conv[2](out)
+            
         return out + self.shortcut(x)
 
 class C3GhostPredictive(nn.Module):
