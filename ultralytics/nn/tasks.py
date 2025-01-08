@@ -1022,6 +1022,7 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
             PredictiveLayer,
             GhostConvPredictive,
             GhostBottleneckPredictive,
+            C3GhostPredictive,
             SPPFPredictive    
         }:
             c1, c2 = ch[f], args[0]
@@ -1045,11 +1046,11 @@ def parse_model(d, ch, verbose=True):  # model_dict, input_channels(3)
                 C3TR,
                 C3Ghost,
                 C3x,
+                C3GhostPredictive,
                 RepC3,
                 C2fPSA,
                 C2fCIB,
                 C2PSA,
-                C3GhostPredictive
             }:
                 args.insert(2, n)  # number of repeats
                 n = 1
